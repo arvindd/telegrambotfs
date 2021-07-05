@@ -5,10 +5,17 @@
 // See the LICENSE file in the project root for more information.
 open System
 open System.Reflection
+open System.Threading
 open Microsoft.Extensions.Configuration
 open Telegram.Bot
 open Telegram.Bot.Args
 open Telegram.Bot.Types
+open Telegram.Bot.Exceptions
+open Telegram.Bot.Extensions.Polling
+open Telegram.Bot.Types.Enums
+open Telegram.Bot.Types.InlineQueryResults
+open Telegram.Bot.Types.InputFiles
+open Telegram.Bot.Types.ReplyMarkups
 
 module TelegramBotFs =
    
@@ -32,24 +39,89 @@ module TelegramBotFs =
                   .AddJsonFile($"appsettings.${environment}.json", true, true)
                   .Build()
 
-    let botClient = TelegramBotClient(config.GetValue("TelegramBot.Token"))
+    let botClient 
+      = TelegramBotClient(config.GetValue("TelegramBot.Token"))
 
-    let me = botClient.GetMeAsync().Result
-    printfn $"Hello, World! I am user {me.Id} and my name is {me.FirstName}."
+    let handleErrorAsync (bot:ITelegramBotClient) (err:Exception) (cts:CancellationToken) = 
+      async {
+        let errormsg = 
+          match err with 
+            | :? ApiRequestException as apiex -> $"Telegram API Error:\n[{apiex.ErrorCode}]\n{apiex.Message}"
+            | _                               -> err.ToString()
 
-    let botOnMessage (args: MessageEventArgs) =
-      if args.Message.Text <> null then
-        Console.WriteLine($"Received a text message in chat {args.Message.Chat.Id}.");
-        do Async.AwaitTask (botClient.SendTextMessageAsync(ChatId(args.Message.Chat.Id),"You said:\n" + args.Message.Text)) |> ignore
-      else
-        Console.WriteLine("No message received");
+        Console.WriteLine(errormsg)        
+      }      
 
-    botClient.OnMessage.Add(botOnMessage)
+    let botOnMessageReceived (message:Message) = 
+      Console.WriteLine($"Receive message type: {message.Type}");
 
-    botClient.StartReceiving()
+      let sendInlineKeyboard = undefined
+      let sendReplyKeyboard = undefined
+      let removeKeyboard = undefined
+      let sendFile = undefined
+      let requestContactAndLocation = undefined
+      let usage = undefined
+
+      async {
+        if message.Type <> MessageType.Text then 
+          ()
+        else
+          let fn = 
+            match message.Text.Split(' ').[0] with
+              | "/inline"   -> sendInlineKeyboard
+              | "/keyboard" -> sendReplyKeyboard
+              | "/remove"   -> removeKeyboard
+              | "/photo"    -> sendFile
+              | "/request"  -> requestContactAndLocation
+              | _           -> usage
+
+          do! fn message
+      }
+
+    let unknownUpdateHandlerAsync (message:Message) =
+      async {
+        undefined
+      }
+
+    let handleUpdateAsync bot (update:Update) cts = 
+      async {
+        try
+          let fn = 
+            match update.Type with 
+              | UpdateType.Message -> botOnMessageReceived
+              | _                  -> unknownUpdateHandlerAsync
+
+          do! fn update.Message
+        with
+          | _ as ex -> do! handleErrorAsync bot ex cts
+      }
+     
+    async {
+      let! me = botClient.GetMeAsync() |> Async.AwaitTask
+      Console.Title = me.Username |> ignore
+      printfn $"Hello, World! I am user {me.Id} and my name is {me.FirstName}."
+      printfn $"Start listening for {me.Username}..."
+
+      use cts = new CancellationTokenSource();
+      
+      // There is quite some bit of jugglery here, so requires some explanation:
+      // DefaultUpdateHandler() requires two arguments, both of type Func<_,_,_,_>, and both
+      // of which return a Task. Now, in order to be in the F# domain, we would like to 
+      // have this Func<> defined as an F# function: and so we need to explicitely construct
+      // Func<>s with by passing them an inner lambda function.
+      // Now, the inner lambda function needs to return a Task, but we want to use F# async.
+      // We therefore use a Async.StartAsTask to start an async computation and get back a Task.
+      // The last ":>" is for upcasting Task<unit> (returned by the async computations) to their
+      // base class Task to avoid and error that says "the expression expects a Task but we have a
+      // Task<unit> here.". Since F# can already infer the base-type, we simply upcast to "_".
+      // The good thing about doing all this is that handleUpdateAsync and handleErrorAsync are both
+      // in the F# domain - so now can take all advantages of F#!
+      botClient.StartReceiving(DefaultUpdateHandler(
+                                Func<_,_,_,_>(fun b u t ->  Async.StartAsTask (handleUpdateAsync b u t) :> _),
+                                Func<_,_,_,_>(fun b e t ->  Async.StartAsTask (handleErrorAsync b e t) :> _)),
+                                cts.Token)
+    } |> Async.Start
 
     printfn "Press any key to exit"
     Console.ReadKey() |> ignore
-
-    botClient.StopReceiving()
     0
