@@ -21,6 +21,7 @@ module TelegramBotFs =
    
   // Just to use for stub functions
   let undefined<'T> : 'T = failwith "Not implemented yet"
+  let empty = () 
 
   [<EntryPoint>]
   let main argv =
@@ -51,16 +52,51 @@ module TelegramBotFs =
 
         Console.WriteLine(errormsg)        
       }      
+ 
+    let botOnCallbackQueryReceived (query:CallbackQuery) = async {
+        Async.AwaitTask(botClient.AnswerCallbackQueryAsync(query.Id, $"Received {query.Data}")) |> ignore
+        Async.AwaitTask(botClient.SendTextMessageAsync(ChatId(query.Message.Chat.Id), $"Received {query.Data}")) |> ignore
+    } 
+
+    let botOnInlineQueryReceived inlinequery = async {
+      return ()
+    }
+
+    let botOnChosenInlineResultReceived chosenInlineResult = async {
+      return ()
+    }
 
     let botOnMessageReceived (message:Message) = 
       Console.WriteLine($"Receive message type: {message.Type}");
 
-      let sendInlineKeyboard = undefined
-      let sendReplyKeyboard = undefined
-      let removeKeyboard = undefined
-      let sendFile = undefined
-      let requestContactAndLocation = undefined
-      let usage = undefined
+      let sendInlineKeyboard = async {
+        Async.AwaitTask (botClient.SendChatActionAsync(ChatId(message.Chat.Id), ChatAction.Typing)) |> ignore
+
+        let inlineKeyboard = seq {
+          // first row
+          seq {
+              InlineKeyboardButton.WithCallbackData("1.1", "11");
+              InlineKeyboardButton.WithCallbackData("1.2", "12");
+          };
+
+          // second row
+          seq {
+              InlineKeyboardButton.WithCallbackData("2.1", "21");
+              InlineKeyboardButton.WithCallbackData("2.2", "22");
+          };
+        }
+
+        Async.AwaitTask(botClient.SendTextMessageAsync(
+                          chatId = ChatId(message.Chat.Id), 
+                          text = "Choose", 
+                          replyMarkup = InlineKeyboardMarkup(inlineKeyboard))) |> ignore
+      } 
+      
+      // let sendReplyKeyboard = undefined
+      // let removeKeyboard = undefined
+      // let sendFile = undefined
+      // let requestContactAndLocation = undefined
+      // let usage = async { return () }
 
       async {
         if message.Type <> MessageType.Text then 
@@ -68,17 +104,17 @@ module TelegramBotFs =
         else
           let fn = 
             match message.Text.Split(' ').[0] with
-              | "/inline"   -> sendInlineKeyboard
-              | "/keyboard" -> sendReplyKeyboard
-              | "/remove"   -> removeKeyboard
-              | "/photo"    -> sendFile
-              | "/request"  -> requestContactAndLocation
-              | _           -> usage
+            | "/inline"   -> sendInlineKeyboard
+            // | "/keyboard" -> sendReplyKeyboard
+            // | "/remove"   -> removeKeyboard
+            // | "/photo"    -> sendFile
+            // | "/request"  -> requestContactAndLocation
+            // | _           -> usage
 
-          do! fn message
-      }
+          do! fn
+    }
 
-    let unknownUpdateHandlerAsync (message:Message) =
+    let unknownUpdateHandlerAsync update =
       async {
         undefined
       }
@@ -88,17 +124,20 @@ module TelegramBotFs =
         try
           let fn = 
             match update.Type with 
-              | UpdateType.Message -> botOnMessageReceived
-              | _                  -> unknownUpdateHandlerAsync
-
-          do! fn update.Message
+            | UpdateType.Message            -> botOnMessageReceived update.Message
+            | UpdateType.EditedMessage      -> botOnMessageReceived update.EditedMessage
+            | UpdateType.CallbackQuery      -> botOnCallbackQueryReceived update.CallbackQuery
+            | UpdateType.InlineQuery        -> botOnInlineQueryReceived update.InlineQuery
+            | UpdateType.ChosenInlineResult -> botOnChosenInlineResultReceived update.ChosenInlineResult
+            | _                             -> unknownUpdateHandlerAsync update
+          fn |> Async.Start
         with
-          | _ as ex -> do! handleErrorAsync bot ex cts
+          | ex -> do! handleErrorAsync bot ex cts
       }
      
     async {
       let! me = botClient.GetMeAsync() |> Async.AwaitTask
-      Console.Title = me.Username |> ignore
+      // Console.Title = me.Username |> ignore
       printfn $"Hello, World! I am user {me.Id} and my name is {me.FirstName}."
       printfn $"Start listening for {me.Username}..."
 
@@ -123,5 +162,5 @@ module TelegramBotFs =
     } |> Async.Start
 
     printfn "Press any key to exit"
-    Console.ReadKey() |> ignore
+    Console.Read() |> ignore
     0
