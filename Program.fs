@@ -4,6 +4,7 @@
 // Licensed to you under the MIT License.
 // See the LICENSE file in the project root for more information.
 open System
+open System.IO
 open System.Reflection
 open System.Threading
 open Microsoft.Extensions.Configuration
@@ -47,30 +48,51 @@ module TelegramBotFs =
       async {
         let errormsg = 
           match err with 
-            | :? ApiRequestException as apiex -> $"Telegram API Error:\n[{apiex.ErrorCode}]\n{apiex.Message}"
-            | _                               -> err.ToString()
+          | :? ApiRequestException as apiex -> $"Telegram API Error:\n[{apiex.ErrorCode}]\n{apiex.Message}"
+          | _                               -> err.ToString()
 
         Console.WriteLine(errormsg)        
       }      
  
     let botOnCallbackQueryReceived (query:CallbackQuery) = async {
-        Async.AwaitTask(botClient.AnswerCallbackQueryAsync(query.Id, $"Received {query.Data}")) |> ignore
-        Async.AwaitTask(botClient.SendTextMessageAsync(ChatId(query.Message.Chat.Id), $"Received {query.Data}")) |> ignore
+        do! botClient.AnswerCallbackQueryAsync(query.Id, $"Received {query.Data}") 
+          |> Async.AwaitTask
+        
+        do! botClient.SendTextMessageAsync(ChatId(query.Message.Chat.Id), $"Received {query.Data}") 
+          |> Async.AwaitTask 
+          |> Async.Ignore
     } 
 
-    let botOnInlineQueryReceived inlinequery = async {
-      return ()
+    let botOnInlineQueryReceived (inlinequery:InlineQuery) = async {
+      Console.WriteLine($"Received inline query from: {inlinequery.From.Id}");
+
+        // displayed result
+      let results = seq {
+        InlineQueryResultArticle(
+          id = "3",
+          title = "TgBots",
+          inputMessageContent = InputTextMessageContent("hello")
+        ) }
+
+      do! botClient.AnswerInlineQueryAsync(inlinequery.Id,
+                                       results |> Seq.cast,
+                                       isPersonal = true,
+                                       cacheTime = 0) 
+        |> Async.AwaitTask 
+        |> Async.Ignore
     }
 
-    let botOnChosenInlineResultReceived chosenInlineResult = async {
-      return ()
+    let botOnChosenInlineResultReceived (chosenInlineResult:ChosenInlineResult) = async {
+      Console.WriteLine($"Received inline result: {chosenInlineResult.ResultId}")
     }
 
     let botOnMessageReceived (message:Message) = 
       Console.WriteLine($"Receive message type: {message.Type}");
 
       let sendInlineKeyboard = async {
-        Async.AwaitTask (botClient.SendChatActionAsync(ChatId(message.Chat.Id), ChatAction.Typing)) |> ignore
+        do! botClient.SendChatActionAsync(ChatId(message.Chat.Id), ChatAction.Typing) 
+          |> Async.AwaitTask 
+          |> Async.Ignore
 
         let inlineKeyboard = seq {
           // first row
@@ -86,30 +108,102 @@ module TelegramBotFs =
           };
         }
 
-        Async.AwaitTask(botClient.SendTextMessageAsync(
-                          chatId = ChatId(message.Chat.Id), 
-                          text = "Choose", 
-                          replyMarkup = InlineKeyboardMarkup(inlineKeyboard))) |> ignore
+        do! botClient.SendTextMessageAsync(
+              chatId = ChatId(message.Chat.Id), 
+              text = "Choose", 
+              replyMarkup = InlineKeyboardMarkup(inlineKeyboard)) 
+          |> Async.AwaitTask 
+          |> Async.Ignore
       } 
       
-      // let sendReplyKeyboard = undefined
-      // let removeKeyboard = undefined
-      // let sendFile = undefined
-      // let requestContactAndLocation = undefined
-      // let usage = async { return () }
+      let sendReplyKeyboard = async {
+        let replyKeyboardMarkup = ReplyKeyboardMarkup( seq {
+          // first row
+          seq { KeyboardButton("1.1"); KeyboardButton("1.2") };
+
+          // second row
+          seq { KeyboardButton("1.1"); KeyboardButton("1.2") };    
+
+        })
+
+        do! botClient.SendTextMessageAsync(chatId = ChatId(message.Chat.Id),
+                                       text = "Choose",
+                                       replyMarkup = replyKeyboardMarkup) 
+          |> Async.AwaitTask 
+          |> Async.Ignore
+      }
+
+      let removeKeyboard = async {
+        do! botClient.SendTextMessageAsync(chatId = ChatId(message.Chat.Id),
+                                       text = "Removing keyboard",
+                                       replyMarkup = ReplyKeyboardRemove())
+          |> Async.AwaitTask
+          |> Async.Ignore
+      }
+
+      let sendFile = async {
+        do! botClient.SendChatActionAsync(ChatId(message.Chat.Id), ChatAction.UploadPhoto) 
+          |> Async.AwaitTask
+          |> Async.Ignore
+
+        let filePath = @"Files/tux.png"
+        use fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read)
+
+        let fileName = 
+          filePath.Split(Path.DirectorySeparatorChar) 
+          |> Array.last          
+
+        do! botClient.SendPhotoAsync(chatId = ChatId(message.Chat.Id),
+                                 photo = InputOnlineFile(fileStream, fileName),
+                                 caption = "Nice Picture")
+          |> Async.AwaitTask
+          |> Async.Ignore   
+      }
+
+      let requestContactAndLocation = async {
+        let requestReplyKeyboard = 
+          ReplyKeyboardMarkup(
+            seq {
+              KeyboardButton.WithRequestLocation("Location");
+              KeyboardButton.WithRequestContact("Contact");
+            })
+
+        do! botClient.SendTextMessageAsync(chatId = ChatId(message.Chat.Id),
+                                       text = "Who or Where are you?",
+                                       replyMarkup = requestReplyKeyboard)
+          |> Async.AwaitTask
+          |> Async.Ignore
+      }
+
+      let usage = async {
+        let usage = "Usage:\n" +
+                     "/inline   - send inline keyboard\n" +
+                     "/keyboard - send custom keyboard\n" +
+                     "/remove   - remove custom keyboard\n" +
+                     "/photo    - send a photo\n" +
+                     "/request  - request location or contact"
+
+        do! botClient.SendTextMessageAsync(chatId = ChatId(message.Chat.Id),
+                                       text = usage,
+                                       replyMarkup = ReplyKeyboardRemove())
+          |> Async.AwaitTask
+          |> Async.Ignore
+      }
 
       async {
         if message.Type <> MessageType.Text then 
           ()
         else
           let fn = 
-            match message.Text.Split(' ').[0] with
-            | "/inline"   -> sendInlineKeyboard
-            // | "/keyboard" -> sendReplyKeyboard
-            // | "/remove"   -> removeKeyboard
-            // | "/photo"    -> sendFile
-            // | "/request"  -> requestContactAndLocation
-            // | _           -> usage
+            // We use tryHead here just in case we get an empty
+            // response from the user
+            match message.Text.Split(' ') |> Array.tryHead with
+            | Some "/inline"   -> sendInlineKeyboard
+            | Some "/keyboard" -> sendReplyKeyboard
+            | Some "/remove"   -> removeKeyboard
+            | Some "/photo"    -> sendFile
+            | Some "/request"  -> requestContactAndLocation
+            | _                -> usage
 
           do! fn
     }
